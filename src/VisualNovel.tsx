@@ -893,18 +893,7 @@ export default function VisualNovel() {
         >
           章選択
         </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!pendingEndroll && !showEndroll) {
-              setPendingEndroll(true);
-              setTimeout(() => setShowEndroll(true), ENDROLL_FADE_MS);
-            }
-          }}
-          style={{padding: '6px 8px', borderRadius: 4, cursor: 'pointer', marginLeft: 8}}
-        >
-          エンドロールへ
-        </button>
+        {/* エンドロールへボタンは不要のため削除 */}
         {showTranscript && (
           (() => {
             // 表示済み台詞を計算: 先頭シーンから現在のシーン/台詞まで
