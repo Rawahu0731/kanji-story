@@ -28,7 +28,7 @@ export default function ChapterSelect({ chapters, onSelectChapter, onStartQuiz, 
       padding: '40px 20px'
     }}>
       <div style={{maxWidth: '1000px', width: '100%'}}>
-        <h1 style={{fontSize: 32, textAlign: 'center', marginBottom: 6, color: '#0b2545'}}>章選択</h1>
+        <h1 style={{fontSize: 32, textAlign: 'center', marginBottom: 6, color: '#0b2545'}}>意味を持たないままで</h1>
         <p style={{textAlign: 'center', opacity: 0.8, marginBottom: 28, color: '#64748b'}}>読みたい章を選んでください</p>
         
         <div style={{

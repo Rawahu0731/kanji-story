@@ -46,6 +46,22 @@ export default function VisualNovel() {
   const [quizTargetScene, setQuizTargetScene] = useState<number | null>(null);
   const [showTitle, setShowTitle] = useState(true);
   const [showChapterSelect, setShowChapterSelect] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(true);
+  useEffect(() => {
+    const check = () => {
+      try {
+        const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(ua);
+        const hasFinePointer = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(pointer: fine)').matches : true;
+        setIsDesktop(!isMobile && Boolean(hasFinePointer));
+      } catch (e) {
+        setIsDesktop(true);
+      }
+    };
+    check();
+    try { window.addEventListener('resize', check); } catch (e) { /* ignore */ }
+    return () => { try { window.removeEventListener('resize', check); } catch (e) { /* ignore */ } };
+  }, []);
   const [chapterLoading, setChapterLoading] = useState(false);
   const [chapterLoadProgress, setChapterLoadProgress] = useState<{loaded:number; total:number}>({loaded:0, total:0});
   const [, setChapterLoadingText] = useState('');
@@ -395,6 +411,20 @@ export default function VisualNovel() {
     return (
       <div className="visual-novel error">
         <div className="error-text">ストーリーを読み込めませんでした</div>
+      </div>
+    );
+  }
+
+  // 非PC（スマホ等）でアクセスされた場合は案内を表示してそれ以外のUIを隠す
+  if (!isDesktop) {
+    return (
+      <div className="visual-novel non-pc-overlay" onClick={(e) => e.stopPropagation()}>
+        <div style={{position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.96)', color: '#fff', zIndex: 999}}>
+          <div style={{maxWidth: 680, padding: 20, textAlign: 'center'}}>
+            <div style={{fontSize: 22, fontWeight: 700, marginBottom: 12}}>パソコンでアクセスしてください</div>
+            <div style={{opacity: 0.9}}>このサイトはパソコンでの閲覧を想定しています。PCからアクセスしてお楽しみください。</div>
+          </div>
+        </div>
       </div>
     );
   }
