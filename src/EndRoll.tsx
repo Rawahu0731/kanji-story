@@ -37,7 +37,7 @@ const normalizeEndroll = (raw: any) => {
 
 // Configure the full-scroll duration (seconds) here as a variable.
 // Change this value to adjust speed (e.g. 300 for 5 minutes).
-export const ENDROLL_DURATION_SEC =300;
+export const ENDROLL_DURATION_SEC =320;
 
 type EndRollProps = {
   onBackToTitle?: () => void;
@@ -48,7 +48,7 @@ export default function EndRoll({ onBackToTitle }: EndRollProps) {
   // Use variable-defined duration (seconds). To change speed, edit
   // `ENDROLL_DURATION_SEC` at top of this file.
   const rollDurationSec = ENDROLL_DURATION_SEC;
-  const startOffsetSec = 5; // 5 seconds silence at start
+  const startOffsetSec = 0; // Start from the beginning of the audio
   const [showFinal, setShowFinal] = useState(false);
   const [showBackButton, setShowBackButton] = useState(false);
 
@@ -98,11 +98,28 @@ export default function EndRoll({ onBackToTitle }: EndRollProps) {
     // Start audio and ensure we don't forcibly stop it when the roll "ends".
     const audio = audioRef.current;
     if (!audio) return;
-    try { audio.currentTime = startOffsetSec; } catch (e) {}
-    const p = audio.play();
-    if (p && typeof (p as any).catch === 'function') {
-      (p as any).catch(() => {});
+    
+    // Wait for metadata to be loaded before setting currentTime
+    const startPlayback = () => {
+      try { 
+        audio.currentTime = startOffsetSec; 
+      } catch (e) {
+        console.warn('Failed to set audio start position:', e);
+      }
+      const p = audio.play();
+      if (p && typeof (p as any).catch === 'function') {
+        (p as any).catch(() => {});
+      }
+    };
+
+    if (audio.readyState >= 1) {
+      // Metadata already loaded
+      startPlayback();
+    } else {
+      // Wait for metadata to load
+      audio.addEventListener('loadedmetadata', startPlayback, { once: true });
     }
+    
     // do not pause audio on unmount to avoid abrupt cuts
   }, []);
 

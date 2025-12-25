@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "convert-voice": "node scripts/convert_wav_to_mp3.mjs",
+    "update-voice-refs": "node scripts/update_story_references.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -15,6 +17,10 @@
     "gifuct-js": "^2.1.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
+  },
+  "optionalDependencies": {
+    "fluent-ffmpeg": "^2.1.2",
+    "ffmpeg-static": "^5.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

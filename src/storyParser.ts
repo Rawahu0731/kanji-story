@@ -5,6 +5,7 @@ export interface DialogueLine {
   character?: string;
   background?: string; // 背景を各dialogueで指定可能に
   characters?: string[]; // 画面に表示するキャラクター配列
+  voice?: string[]; // ボイスファイルのパス配列
 }
 
 export interface Scene {
@@ -117,7 +118,8 @@ export async function loadStory(): Promise<Scene[]> {
           speaker, 
           text: d.text,
           background: d.background,
-          characters: d.characters
+          characters: d.characters,
+          voice: d.voice
         };
       })
     }));

@@ -25,6 +25,7 @@ export default function VisualNovel() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [currentDialogueIndex, setCurrentDialogueIndex] = useState(0);
+  const [showChapterTitle, setShowChapterTitle] = useState(true); // 章タイトルを表示するかどうか
   const [loading, setLoading] = useState(true);
   const ZERO_FRAMES = 16;
   const ZERO_FPS = 24; // default frames per second for the animation (adjustable)
@@ -102,8 +103,28 @@ export default function VisualNovel() {
     // eslint-disable-next-line no-console
     console.log(`${ts} ${msg}`);
   };
+
+  // keep refs in sync with latest indices for async handlers
+  useEffect(() => {
+    currentSceneIndexRef.current = currentSceneIndex;
+    currentDialogueIndexRef.current = currentDialogueIndex;
+  }, [currentSceneIndex, currentDialogueIndex]);
   // 表示済み台詞の履歴（トランスクリプト）表示フラグ
   const [showTranscript, setShowTranscript] = useState(false);
+
+  // 自動進行 (音声終了後に自動で次へ進む) の設定
+  const [autoAdvanceEnabled, setAutoAdvanceEnabled] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('autoAdvanceEnabled');
+      if (raw !== null) return JSON.parse(raw) === true;
+    } catch (e) {
+      // ignore
+    }
+    return true;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('autoAdvanceEnabled', JSON.stringify(autoAdvanceEnabled)); } catch (e) {}
+  }, [autoAdvanceEnabled]);
 
   useEffect(() => {
     loadStory().then((loadedScenes) => {
@@ -217,6 +238,76 @@ export default function VisualNovel() {
   const zeroFramesRef = React.useRef<HTMLImageElement[] | null>(null);
   const animRef = React.useRef<number | null>(null);
   const frameIndexRef = React.useRef(0);
+  // audio players for dialogue voice playback
+  const audioPlayersRef = React.useRef<HTMLAudioElement[]>([]);
+  // background music (separate from dialogue audioPlayers)
+  const bgmRef = React.useRef<HTMLAudioElement | null>(null);
+
+  // track how many audio items are pending/playing for the current dialogue
+  const pendingAudioCountRef = React.useRef(0);
+  // timeout id for delayed auto-advance after audio finishes
+  const pendingAdvanceTimeoutRef = React.useRef<number | null>(null);
+  // timeout id for auto-advancing from chapter title
+  const pendingTitleTimeoutRef = React.useRef<number | null>(null);
+  // keep latest indices in refs so async handlers can verify current position
+  const currentSceneIndexRef = React.useRef(currentSceneIndex);
+  const currentDialogueIndexRef = React.useRef(currentDialogueIndex);
+
+  const stopAllAudio = () => {
+    try {
+      audioPlayersRef.current.forEach((a) => {
+        try {
+          // remove any attached handlers to avoid triggering after stop
+          const anyA = a as any;
+          if (anyA._vn_onended) try { a.removeEventListener('ended', anyA._vn_onended); } catch(e){}
+          if (anyA._vn_onerror) try { a.removeEventListener('error', anyA._vn_onerror); } catch(e){}
+          a.pause();
+          a.currentTime = 0;
+        } catch (e) {
+          // ignore
+        }
+      });
+    } finally {
+      audioPlayersRef.current = [];
+      pendingAudioCountRef.current = 0;
+      if (pendingAdvanceTimeoutRef.current !== null) {
+        try { clearTimeout(pendingAdvanceTimeoutRef.current); } catch (e) {}
+        pendingAdvanceTimeoutRef.current = null;
+      }
+    }
+  };
+
+  // BGM: play when entering story screen (not title, not chapter select, not endroll)
+  useEffect(() => {
+    const inStory = !showTitle && !showChapterSelect && !showEndroll && !loading;
+    if (inStory) {
+      if (!bgmRef.current) {
+        try {
+          const bgm = new Audio('/BGM.mp3');
+          bgm.loop = true;
+          // BGMを控えめにする（ボイスを相対的に聞きやすくするため）
+          bgm.volume = 0.25;
+          bgmRef.current = bgm;
+          const p = bgm.play();
+          if (p && typeof p.then === 'function') p.catch((e) => { console.warn('BGM play failed', e); });
+        } catch (e) {
+          console.warn('BGM init failed', e);
+        }
+      }
+    } else {
+      if (bgmRef.current) {
+        try { bgmRef.current.pause(); bgmRef.current.currentTime = 0; } catch (e) {}
+        bgmRef.current = null;
+      }
+    }
+
+    return () => {
+      // do not interfere with dialogue audioPlayers; just stop bgm when cleaning up
+      if (bgmRef.current) {
+        try { bgmRef.current.pause(); bgmRef.current = null; } catch (e) {}
+      }
+    };
+  }, [showTitle, showChapterSelect, showEndroll, loading]);
 
   // 一度だけフレームをプリロード
   useEffect(() => {
@@ -349,6 +440,178 @@ export default function VisualNovel() {
     }
   }, [scenes, currentSceneIndex, currentDialogueIndex, zeroTriggers]);
 
+  // 台詞が表示された瞬間に対応する voice ファイルを再生する
+  useEffect(() => {
+    // 章タイトル表示中は音声を再生しない
+    if (showChapterTitle) {
+      stopAllAudio();
+      return;
+    }
+
+    // 章選択・タイトル・エンドロール（フェード中含む）・クイズ表示中は音声を再生しない
+    if (showChapterSelect || showTitle || showEndroll || pendingEndroll || quizOpen) {
+      stopAllAudio();
+      return;
+    }
+
+    // ensure any previous dialogue audio stopped before starting new ones
+    stopAllAudio();
+    try {
+      const dialog = scenes?.[currentSceneIndex]?.dialogues?.[currentDialogueIndex];
+      const voices = dialog?.voice;
+      console.log('🎵 Dialogue voice check:', { sceneIndex: currentSceneIndex, dialogueIndex: currentDialogueIndex, voices, text: dialog?.text?.substring(0, 30) });
+      if (!voices || !Array.isArray(voices) || voices.length === 0) return;
+
+      // set count of pending audios for this dialogue
+      if (pendingAdvanceTimeoutRef.current !== null) {
+        try { clearTimeout(pendingAdvanceTimeoutRef.current); } catch (e) {}
+        pendingAdvanceTimeoutRef.current = null;
+      }
+      pendingAudioCountRef.current = voices.length;
+      const localScene = currentSceneIndex;
+      const localDialogue = currentDialogueIndex;
+
+      const onOneFinished = () => {
+        pendingAudioCountRef.current = Math.max(0, pendingAudioCountRef.current - 1);
+        console.log('🎵 Audio finished, remaining:', pendingAudioCountRef.current);
+        if (pendingAudioCountRef.current <= 0) {
+          console.log('🎵 All audio finished for dialogue');
+          // do nothing if auto-advance is disabled
+          if (!autoAdvanceEnabled) {
+            console.log('🎵 Auto-advance is disabled');
+            return;
+          }
+          // schedule a short delay before auto-advancing
+          if (pendingAdvanceTimeoutRef.current !== null) return;
+          pendingAdvanceTimeoutRef.current = window.setTimeout(() => {
+            pendingAdvanceTimeoutRef.current = null;
+            console.log('⏱️ Auto-advance timeout triggered:', { localScene, localDialogue, currentSceneRef: currentSceneIndexRef.current, currentDialogueRef: currentDialogueIndexRef.current });
+            // only auto-advance if still at the same dialogue
+            if (currentSceneIndexRef.current === localScene && currentDialogueIndexRef.current === localDialogue) {
+              // do not auto-advance when quiz or chapter title/select/endroll is active
+              console.log('⏱️ Checking conditions:', { quizOpen, showChapterTitle, showChapterSelect, pendingEndroll, showEndroll });
+              if (quizOpen || showChapterTitle || showChapterSelect || pendingEndroll || showEndroll) {
+                console.log('⏱️ Auto-advance blocked by active UI state');
+                return;
+              }
+
+              const currentScene = scenes[localScene];
+              if (!currentScene) return;
+              console.log('🎬 Auto-advance:', { localScene, localDialogue, totalScenes: scenes.length, dialoguesInScene: currentScene.dialogues.length });
+              if (localDialogue < currentScene.dialogues.length - 1) {
+                setCurrentDialogueIndex(localDialogue + 1);
+              } else {
+                // If this was the last dialogue of the last scene, start the endroll
+                console.log('🎬 Last dialogue of scene:', { localScene, totalScenes: scenes.length, isLastScene: localScene === scenes.length - 1 });
+                if (localScene === scenes.length - 1) {
+                  console.log('🎬 Starting endroll transition');
+                  if (!pendingEndroll && !showEndroll) {
+                    // Stop all audio immediately and clear any pending timers
+                    stopAllAudio();
+                    if (pendingAdvanceTimeoutRef.current !== null) {
+                      try { clearTimeout(pendingAdvanceTimeoutRef.current); } catch (e) {}
+                      pendingAdvanceTimeoutRef.current = null;
+                    }
+                    setPendingEndroll(true);
+                    setTimeout(() => {
+                      setShowEndroll(true);
+                    }, ENDROLL_FADE_MS);
+                  }
+                } else {
+                  console.log('🎬 Returning to chapter select');
+                  setCompletedChapters((prev) => new Set(Array.from(prev).concat([localScene])));
+                  setShowChapterSelect(true);
+                }
+              }
+            }
+          }, 200);
+        }
+      };
+
+      voices.forEach((entry: any) => {
+        try {
+          let src = String(entry || '');
+          src = src.replace(/\\/g, '/');
+          if (!src.startsWith('/')) src = '/' + src.replace(/^\/+/, '');
+          console.log('🎵 Attempting to play:', src);
+          const audio = new Audio(src);
+          audio.preload = 'auto';
+          // ボイスは最大に近い音量で再生（Audio.volume の上限は 1.0）
+          try { audio.volume = 1.0; } catch (e) { /* ignore */ }
+
+          const endedHandler = () => { try { onOneFinished(); } catch (e) {} };
+          const errorHandler = () => { try { onOneFinished(); } catch (e) {} };
+          (audio as any)._vn_onended = endedHandler;
+          (audio as any)._vn_onerror = errorHandler;
+          audio.addEventListener('ended', endedHandler);
+          audio.addEventListener('error', errorHandler);
+
+          audioPlayersRef.current.push(audio);
+          const p = audio.play();
+          if (p && typeof p.then === 'function') {
+            p.then(() => { console.log('✅ Audio playing:', src); })
+             .catch((e) => {
+               console.warn('❌ Audio play failed', src, e);
+               // treat as finished
+               try { errorHandler(); } catch (err) {}
+             });
+          }
+        } catch (e) {
+          console.warn('voice playback error', entry, e);
+          // count this as finished
+          pendingAudioCountRef.current = Math.max(0, pendingAudioCountRef.current - 1);
+        }
+      });
+    } catch (e) {
+      // ignore
+    }
+
+    return () => {
+      stopAllAudio();
+    };
+  }, [currentSceneIndex, currentDialogueIndex, scenes, showChapterTitle, quizOpen, showChapterSelect, pendingEndroll, showEndroll, autoAdvanceEnabled]);
+
+  // コンポーネントアンマウント時に音声停止
+  useEffect(() => {
+    return () => { stopAllAudio(); };
+  }, []);
+
+  // 章選択画面に戻る、タイトル表示、またはエンドロール表示が始まったときは
+  // 再生中のボイスを止める
+  useEffect(() => {
+    if (showChapterSelect || showTitle || showEndroll) {
+      stopAllAudio();
+    }
+  }, [showChapterSelect, showTitle, showEndroll]);
+
+  // 章タイトル表示中に、自動進行がONなら3秒後に自動で章タイトルを閉じて先に進める
+  useEffect(() => {
+    if (!showChapterTitle) {
+      if (pendingTitleTimeoutRef.current !== null) {
+        try { clearTimeout(pendingTitleTimeoutRef.current); } catch (e) {}
+        pendingTitleTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    // schedule auto-close only when autoAdvanceEnabled is true
+    if (autoAdvanceEnabled) {
+      if (pendingTitleTimeoutRef.current !== null) return;
+      pendingTitleTimeoutRef.current = window.setTimeout(() => {
+        pendingTitleTimeoutRef.current = null;
+        // hide the chapter title to start the scene
+        setShowChapterTitle(false);
+      }, 3000);
+    }
+
+    return () => {
+      if (pendingTitleTimeoutRef.current !== null) {
+        try { clearTimeout(pendingTitleTimeoutRef.current); } catch (e) {}
+        pendingTitleTimeoutRef.current = null;
+      }
+    };
+  }, [showChapterTitle, autoAdvanceEnabled]);
+
   // クイズの結果ハンドラ
   const handleQuizResult = (success: boolean) => {
     if (quizTargetScene === null) {
@@ -376,9 +639,28 @@ export default function VisualNovel() {
     
     if (!currentScene) return;
 
+    // 章タイトル表示中の場合は、タイトルを非表示にしてストーリーを開始
+    if (showChapterTitle) {
+      setShowChapterTitle(false);
+      return;
+    }
+
+    // 音声が再生中の場合はクリックで先に進めないようにする
+    if (pendingAudioCountRef.current > 0) {
+      return;
+    }
+
     // If this is the last dialogue, initiate endroll fade on click
+    console.log('🖱️ Click check:', { currentSceneIndex, totalScenes: scenes.length, currentDialogueIndex, dialoguesInScene: currentScene.dialogues.length });
     if (currentSceneIndex === scenes.length - 1 && currentDialogueIndex === currentScene.dialogues.length - 1) {
+      console.log('🖱️ Last dialogue clicked - starting endroll');
       if (!pendingEndroll && !showEndroll) {
+        // Stop all audio immediately and clear auto-advance timer
+        stopAllAudio();
+        if (pendingAdvanceTimeoutRef.current !== null) {
+          try { clearTimeout(pendingAdvanceTimeoutRef.current); } catch (e) {}
+          pendingAdvanceTimeoutRef.current = null;
+        }
         setPendingEndroll(true);
         // after fade, show endroll (unmount VN and mount EndRoll)
         setTimeout(() => {
@@ -500,6 +782,15 @@ export default function VisualNovel() {
             }
           });
         }
+        // voice files preload
+        if (Array.isArray(d.voice)) {
+          d.voice.forEach((v: string) => {
+            let src = String(v || '').replace(/\\/g, '/');
+            if (!src.startsWith('/')) src = '/' + src.replace(/^\/+/, '');
+            urls.add(src);
+            console.log('📦 Preloading voice:', src);
+          });
+        }
       });
 
       const urlArray = Array.from(urls);
@@ -509,10 +800,19 @@ export default function VisualNovel() {
 
       let loaded = 0;
       const promises = urlArray.map((u) => new Promise<void>((resolve) => {
-        const img = new Image();
-        img.onload = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
-        img.onerror = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
-        img.src = u;
+        // audio files use Audio element, images use Image element
+        if (u.endsWith('.wav') || u.endsWith('.mp3') || u.endsWith('.ogg')) {
+          const audio = new Audio();
+          audio.oncanplaythrough = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
+          audio.onerror = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
+          audio.preload = 'auto';
+          audio.src = u;
+        } else {
+          const img = new Image();
+          img.onload = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
+          img.onerror = () => { loaded++; setChapterLoadProgress({loaded, total: urlArray.length}); resolve(); };
+          img.src = u;
+        }
       }));
 
       // wait for all or timeout
@@ -536,6 +836,7 @@ export default function VisualNovel() {
               }
               setCurrentSceneIndex(chapterIndex);
               setCurrentDialogueIndex(0);
+              setShowChapterTitle(true); // 章タイトルを表示する
               setShowChapterSelect(false);
             })();
           }}
@@ -612,7 +913,7 @@ export default function VisualNovel() {
       </div>
 
       {/* タイトル・章名の中央表示（下から上がって中央で止まる） */}
-      {currentDialogueIndex === 0 && !currentDialogue?.speaker && (
+      {showChapterTitle && (
         <CenterScrollText duration={900}>
           <div className="center-title">
             <div className="center-title-text">{currentScene.title}</div>
@@ -622,7 +923,7 @@ export default function VisualNovel() {
 
       {/* キャラクター表示エリア */}
       <div className="character-area">
-        {(() => {
+        {!showChapterTitle && (() => {
           const characters = getCurrentCharacters();
           
           // キャラクター画像マッピング（定義は上部の定数を参照）
@@ -889,14 +1190,16 @@ export default function VisualNovel() {
       </div>
 
       {/* テキストボックス */}
-      <div className="text-box">
-        <div className="dialogue-text">
-          {currentDialogue?.text}
+      {!showChapterTitle && (
+        <div className="text-box">
+          <div className="dialogue-text">
+            {currentDialogue?.text}
+          </div>
+          {!isLastDialogue && (
+            <div className="continue-indicator">▼</div>
+          )}
         </div>
-        {!isLastDialogue && (
-          <div className="continue-indicator">▼</div>
-        )}
-      </div>
+      )}
 
       {/* プログレス表示 */}
       <div className="progress-bar">
@@ -922,6 +1225,13 @@ export default function VisualNovel() {
           style={{padding: '6px 8px', borderRadius: 4, cursor: 'pointer', marginLeft: 8}}
         >
           章選択
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); setAutoAdvanceEnabled(v => !v); }}
+          style={{padding: '6px 8px', borderRadius: 4, cursor: 'pointer', marginLeft: 8}}
+          title="音声再生後の自動進行を切り替え"
+        >
+          {autoAdvanceEnabled ? '自動: ON' : '自動: OFF'}
         </button>
         {/* エンドロールへボタンは不要のため削除 */}
         {showTranscript && (
